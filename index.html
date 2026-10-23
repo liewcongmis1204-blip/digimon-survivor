@@ -254,9 +254,9 @@ function tryDigimonEvolution(){
  return true;
 }
 function tryDigimonDevolution(){
- const g=game;if(!g)return false;const from=getPlayerSpecies(g);if(!from||stageRank(from)<=stageRank('rookie'))return false;
+ const g=game;if(!g||!g.canDevolve)return false;const from=getPlayerSpecies(g);if(!from)return false;
  const parents=(from.from||[]).map(id=>getDigimonRecord(id)).filter(d=>d&&stageRank(d)<stageRank(from));
- if(!parents.length){console.warn('[Evolution] '+from.name+' 的 from 没有可用上一级记录，保留当前形态。');return false}
+ if(!parents.length){console.warn('[Evolution] '+from.name+' 的 from 没有可用上一级记录，保留当前形态。');g.evolutionEnergy=0;g.canDevolve=false;return false}
  const parent=parents.find(d=>d.id===g.lastEvolutionFromId)||parents.sort((a,b)=>stageRank(b)-stageRank(a))[0];
  const oldRank=stageRank(from),newRank=stageRank(parent);
  const sealedNow=[];
