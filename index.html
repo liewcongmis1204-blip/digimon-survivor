@@ -443,6 +443,14 @@ function update(dt){
   const p=g.particles[i];p.worldX+=p.vx*dt;p.worldY+=p.vy*dt;p.life-=dt;
   if(p.life<=0)g.particles.splice(i,1);
  }
+ // Evolution energy is independent from XP. Devolution only triggers when the energy crosses below its threshold.
+ if(g.evolutionEnergy>0&&stageRank(getPlayerSpecies(g))>stageRank('rookie')){
+  const priorEnergy=g.evolutionEnergy;
+  g.evolutionEnergy=Math.max(0,g.evolutionEnergy-.42*dt);
+  if(priorEnergy>=g.devolutionThreshold&&g.evolutionEnergy<g.devolutionThreshold)tryDigimonDevolution();
+ }
+ // Full energy is the base gate. Branch choice then checks learned skills and fused ultimate combinations.
+ if(g.evolutionEnergy>=g.evolutionEnergyMax&&!g.evolutionBlocked)tryDigimonEvolution();
  updateHud();
 }
 function drawGrid(){
@@ -544,6 +552,7 @@ window.DigimonEvolutionAPI={
  fuseUltimate:(recipeId)=>{if(!game)return false;const d=getPlayerSpecies(game),recipe=d?.ultimateRecipe;if(!recipe||recipe.id!==recipeId||!recipe.enabled||!Array.isArray(recipe.requiredSkillIds)||!recipe.requiredSkillIds.length)return false;if(game.sealedUltimateRecipes.includes(recipeId)||!recipe.requiredSkillIds.every(id=>game.learnedSkills.includes(id)))return false;if(game.fusedUltimateRecipes.some(x=>x.recipeId===recipeId&&!x.sealed))return false;game.fusedUltimateRecipes.push({recipeId,name:recipe.name||recipeId,minStageRank:stageRank(recipe.minStage||d.stage),sealOnDevolution:recipe.sealOnDevolution!==false,sealed:false});game.evolutionBlocked=false;console.info('[Ultimate] 合成必杀成功：'+(recipe.name||recipeId));if(game.evolutionEnergy>=game.evolutionEnergyMax)tryDigimonEvolution();return true},
  setEvolutionEnergy:(value)=>{if(!game)return false;game.evolutionEnergy=Math.max(0,Math.min(game.evolutionEnergyMax,Number(value)||0));game.evolutionBlocked=false;if(game.evolutionEnergy>=game.evolutionEnergyMax)return tryDigimonEvolution();return true},
  tryEvolution:()=>tryDigimonEvolution(),
+ tryDevolution:()=>tryDigimonDevolution(),
  setCurrentDigimon:(id)=>{if(!game)return false;const d=getDigimonRecord(id);if(!d)return false;const old=getPlayerSpecies(game);game.lastEvolutionFromId=old?.id||null;game.currentDigimonId=d.id;game.lineageVersionId=d.versionId;game.currentSprite=d.spriteFile;game.currentStage=d.stage;game.attr=d.attr;syncSpeciesBaseStats(game,d);game.evolved=stageRank(d)>stageRank('rookie');game.evolutionBlocked=false;updateHud();render();return true}
 };
 
