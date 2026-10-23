@@ -1338,3 +1338,48 @@ window.DIGIMON_EVOLUTION_CONFIG = {
     }
   }
 })(window.DIGIMON_EVOLUTION_CONFIG);
+
+
+/*
+ * 方便后续逐只填技能名称的覆盖区。
+ * 不需要复制96只的完整配置；只填写需要定制的物种即可。
+ * 覆盖区示例：
+ * window.DIGIMON_SKILL_OVERRIDES = {
+ *   "tanemon": {
+ *     "skillPool": {
+ *       "1": {"id":"tanemon_leaf_cut","name":"叶刃","description":"植物属性攻击","tags":["plant"],"enabled":true},
+ *       "2": {"id":"tanemon_root_bind","name":"根缚","description":"控制目标","tags":["control"],"enabled":true}
+ *     },
+ *     "ultimateRecipe": {
+ *       "id":"tanemon_ultimate_combo",
+ *       "name":"森林终极连携",
+ *       "requiredSkillIds":["tanemon_leaf_cut","tanemon_root_bind"],
+ *       "enabled":true,
+ *       "minStage":"rookie",
+ *       "sealOnDevolution":true
+ *     },
+ *     "branchConditions": {
+ *       "kabuterimon": {"requiredSkillIds":["tanemon_leaf_cut"],"priority":10},
+ *       "togemon": {"requiredSkillIds":["tanemon_root_bind"],"priority":10}
+ *     }
+ *   }
+ * };
+ */
+window.DIGIMON_SKILL_OVERRIDES = window.DIGIMON_SKILL_OVERRIDES || {};
+(function applyDigimonSkillOverrides(config, overrides) {
+  const byId = new Map();
+  for (const version of Object.values(config)) for (const d of (version.digimonList || [])) byId.set(d.id, d);
+  for (const [id, patch] of Object.entries(overrides || {})) {
+    const d = byId.get(id);
+    if (!d) { console.warn('[EvolutionConfig] 技能覆盖目标不存在：', id); continue; }
+    for (const [slotNo, slotPatch] of Object.entries(patch.skillPool || {})) {
+      const slot = (d.skillPool || []).find(s => String(s.slot) === String(slotNo));
+      if (slot) Object.assign(slot, slotPatch, { slot: slot.slot });
+    }
+    if (patch.ultimateRecipe) d.ultimateRecipe = { ...(d.ultimateRecipe || {}), ...patch.ultimateRecipe };
+    for (const [toId, rulePatch] of Object.entries(patch.branchConditions || {})) {
+      d.branchConditions = d.branchConditions || {};
+      d.branchConditions[toId] = { ...(d.branchConditions[toId] || {}), ...rulePatch };
+    }
+  }
+})(window.DIGIMON_EVOLUTION_CONFIG, window.DIGIMON_SKILL_OVERRIDES);
