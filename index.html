@@ -111,6 +111,7 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 </section>
 <p class="footer-note">视觉版本 v0.3 · 以你提供的像素图纸为角色参考。当前重点：角色立绘、伙伴选择卡、战斗 HUD 与反馈动效；暂不扩展关卡内容。</p>
 </main>
+<script src="assets/digimon-evolution-config.js"></script>
 <script>
 (()=>{
 const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
@@ -125,6 +126,181 @@ const names={agumon:{name:'亚古兽',evo:'暴龙兽',color:'#ffb04e',shot:'#ff6
 const digimonSprites={agumon:new Image(),gabumon:new Image()};
 digimonSprites.agumon.src='assets/agumon.png';
 digimonSprites.gabumon.src='assets/gabumon.png';
+
+const EVO_CONFIG=window.DIGIMON_EVOLUTION_CONFIG||{};
+const EVOLUTION_STAGE_RANK={egg:0,in1:1,in2:2,rookie:3,adult:4,perfect:5,ultimate:6};
+const EVOLUTION_STAGE_LABEL={egg:'蛋',in1:'幼年期Ⅰ',in2:'幼年期Ⅱ',rookie:'成长期',adult:'成熟期',perfect:'完全体',ultimate:'究极体'};
+const ATTR_BEATS={Va:'Vi',Vi:'Da',Da:'Va'}; // 疫苗 > 病毒 > 数据 > 疫苗
+const STAGE_BASE_STATS={
+ egg:{maxHp:25,attack:5,speed:175,fireRate:.95,range:220},
+ in1:{maxHp:32,attack:6,speed:185,fireRate:.92,range:235},
+ in2:{maxHp:48,attack:9,speed:195,fireRate:.86,range:255},
+ rookie:{maxHp:100,attack:22,speed:210,fireRate:.72,range:290},
+ adult:{maxHp:132,attack:29,speed:214,fireRate:.68,range:305},
+ perfect:{maxHp:174,attack:39,speed:218,fireRate:.63,range:325},
+ ultimate:{maxHp:228,attack:52,speed:222,fireRate:.58,range:350}
+};
+const ALL_DIGIMON=[];
+const DIGIMON_BY_ID=new Map();
+for(const [versionId,version] of Object.entries(EVO_CONFIG)){
+ for(const d of (version.digimonList||[])){
+  d.versionId=d.versionId||versionId;d.versionName=d.versionName||version.name;
+  d.stageRank=EVOLUTION_STAGE_RANK[d.stage]??0;
+  ALL_DIGIMON.push(d);
+  if(!DIGIMON_BY_ID.has(d.id))DIGIMON_BY_ID.set(d.id,d);
+ }
+}
+function makeSkillPool(id){return Array.from({length:6},(_,i)=>({id:id+'_skill_'+(i+1),slot:i+1,name:'',description:'',tags:[],enabled:false}))}
+function makeBranchConditions(branches){return Object.fromEntries((branches||[]).map(toId=>[toId,{enabled:true,requiredSkillIds:[],anySkillIds:[],requiredUltimateRecipeIds:[],excludedSkillIds:[],minLearnedSkills:0,priority:0}]))}
+// Compatibility starting partners keep the current selection UI intact; after their first evolution they enter the user-configured lineage graph.
+const LEGACY_STARTER_NODES={
+ agumon:{id:'agumon',name:'亚古兽',stage:'rookie',attr:'Va',spriteFile:'agumon.png',from:['egg'],branches:['greymon','meramon'],versionId:'VER3_NIGHTMARE_SOLDIERS',versionName:'Nightmare Soldiers 恶梦士兵',skillPool:makeSkillPool('agumon'),ultimateRecipe:{id:'agumon_ultimate_combo',name:'',requiredSkillIds:[],enabled:false,minStage:'rookie',sealOnDevolution:true},branchConditions:makeBranchConditions(['greymon','meramon'])},
+ gabumon:{id:'gabumon',name:'加布兽',stage:'rookie',attr:'Da',spriteFile:'gabumon.png',from:['egg'],branches:['garurumon'],versionId:'VER3_NIGHTMARE_SOLDIERS',versionName:'Nightmare Soldiers 恶梦士兵',skillPool:makeSkillPool('gabumon'),ultimateRecipe:{id:'gabumon_ultimate_combo',name:'',requiredSkillIds:[],enabled:false,minStage:'rookie',sealOnDevolution:true},branchConditions:makeBranchConditions(['garurumon'])}
+};
+const SPECIES_SPRITE_CACHE=Object.create(null);
+const MISSING_BRANCH_TARGETS=[...new Set(ALL_DIGIMON.flatMap(d=>d.branches||[]).filter(id=>!DIGIMON_BY_ID.has(id)))];
+if(MISSING_BRANCH_TARGETS.length)console.warn('[EvolutionConfig] 以下分支目标未包含在用户提供的96只列表内，系统不会自行补造：',MISSING_BRANCH_TARGETS);
+function getDigimonRecord(id){return LEGACY_STARTER_NODES[id]||DIGIMON_BY_ID.get(id)||null}
+function getPlayerSpecies(g=game){return g?getDigimonRecord(g.currentDigimonId)||LEGACY_STARTER_NODES[g.hero]||null:null}
+function stageRank(stageOrSpecies){const stage=typeof stageOrSpecies==='string'?stageOrSpecies:stageOrSpecies?.stage;return EVOLUTION_STAGE_RANK[stage]??0}
+function getStageBaseStats(species){return {...(STAGE_BASE_STATS[species?.stage]||STAGE_BASE_STATS.rookie)}}
+function spritePathForFile(file){if(!file)return '';return ['agumon.png','gabumon.png'].includes(file)?'assets/'+file:'assets/digimon/'+file}
+function getSpeciesSprite(file){
+ if(!file)return null;
+ const path=spritePathForFile(file);
+ if(!SPECIES_SPRITE_CACHE[path]){
+  const image=new Image();image._digimonFailed=false;
+  image.onload=()=>{image._digimonFailed=false};
+  image.onerror=()=>{image._digimonFailed=true};
+  image.src=path;SPECIES_SPRITE_CACHE[path]=image;
+ }
+ const image=SPECIES_SPRITE_CACHE[path];
+ return image.complete&&image.naturalWidth>0?image:null;
+}
+function getPlayerSprite(g=game){return getSpeciesSprite(g?.currentSprite)||digimonSprites[g?.hero]||null}
+function getAttributeDamageMultiplier(attackerAttr,defenderAttr){
+ if(!attackerAttr||!defenderAttr||!ATTR_BEATS[attackerAttr])return 1;
+ if(ATTR_BEATS[attackerAttr]===defenderAttr)return 1.25;
+ if(ATTR_BEATS[defenderAttr]===attackerAttr)return .8;
+ return 1;
+}
+function branchRuleConfigured(rule){
+ return !!rule&&((rule.requiredSkillIds||[]).length>0||(rule.anySkillIds||[]).length>0||(rule.requiredUltimateRecipeIds||[]).length>0||(rule.excludedSkillIds||[]).length>0||(Number(rule.minLearnedSkills)||0)>0||(Number(rule.priority)||0)!==0);
+}
+function activeFusedRecipeIds(g){
+ return new Set((g.fusedUltimateRecipes||[]).filter(x=>!(typeof x==='object'&&x.sealed)).map(x=>typeof x==='string'?x:x.recipeId));
+}
+function branchRuleMatches(rule,g){
+ if(!rule||rule.enabled===false)return false;
+ const learned=new Set(g.learnedSkills||[]),fused=activeFusedRecipeIds(g);
+ if(!(rule.requiredSkillIds||[]).every(id=>learned.has(id)))return false;
+ if((rule.anySkillIds||[]).length&&!(rule.anySkillIds||[]).some(id=>learned.has(id)))return false;
+ if((rule.requiredUltimateRecipeIds||[]).some(id=>!fused.has(id)))return false;
+ if((rule.excludedSkillIds||[]).some(id=>learned.has(id)))return false;
+ if(learned.size<(Number(rule.minLearnedSkills)||0))return false;
+ return true;
+}
+function branchRuleScore(rule){
+ return (rule.requiredSkillIds||[]).length*4+(rule.requiredUltimateRecipeIds||[]).length*5+(rule.anySkillIds||[]).length*2+(rule.excludedSkillIds||[]).length+(Number(rule.minLearnedSkills)||0)+(Number(rule.priority)||0);
+}
+function saveEvolutionProfile(){/* Existing high-score/save flow stays intact; evolution state remains in the active run. */}
+function syncSpeciesBaseStats(g,nextSpecies){
+ const old=g.speciesBaseStats||getStageBaseStats(getPlayerSpecies(g));
+ const hpRatio=old.maxHp?g.maxHp/old.maxHp:1,attackRatio=old.attack?g.damage/old.attack:1,speedRatio=old.speed?g.speed/old.speed:1,fireRateRatio=old.fireRate?g.fireRate/old.fireRate:1,rangeRatio=old.range?g.range/old.range:1;
+ const hpPercent=g.maxHp>0?g.hp/g.maxHp:1,newBase=getStageBaseStats(nextSpecies);
+ g.maxHp=Math.max(1,Math.round(newBase.maxHp*hpRatio));
+ g.damage=Math.max(1,newBase.attack*attackRatio);
+ g.speed=Math.max(40,newBase.speed*speedRatio);
+ g.fireRate=Math.max(.18,newBase.fireRate*fireRateRatio);
+ g.range=Math.max(80,newBase.range*rangeRatio);
+ g.hp=Math.max(1,Math.min(g.maxHp,Math.round(g.maxHp*hpPercent)));
+ g.speciesBaseStats=newBase;
+ g.r=17+Math.max(0,stageRank(nextSpecies)-stageRank('rookie'))*1.2;
+}
+function chooseEvolutionTarget(g,current){
+ const branches=(current.branches||[]).map(id=>({id,species:getDigimonRecord(id),rule:current.branchConditions?.[id]})).filter(x=>x.species&&stageRank(x.species)>stageRank(current));
+ if(!branches.length)return {target:null,reason:'无可用的更高阶段分支（部分 branches 目标不在96只列表内）'};
+ const hasConfiguredRules=branches.some(x=>branchRuleConfigured(x.rule));
+ if(hasConfiguredRules){
+  const matches=branches.filter(x=>branchRuleMatches(x.rule,g));
+  if(!matches.length)return {target:null,reason:'已配置的技能／合成必杀条件尚未匹配'};
+  const bestScore=Math.max(...matches.map(x=>branchRuleScore(x.rule)));
+  const best=matches.filter(x=>branchRuleScore(x.rule)===bestScore);
+  return {target:best[Math.floor(Math.random()*best.length)].species,reason:'技能组合条件匹配',matchedSkills:[...(g.learnedSkills||[])],matchedRecipes:[...activeFusedRecipeIds(g)]};
+ }
+ const picked=branches[Math.floor(Math.random()*branches.length)];
+ return {target:picked.species,reason:'默认占位分支（尚未配置技能条件，随机选择有效分支）',matchedSkills:[...(g.learnedSkills||[])],matchedRecipes:[...activeFusedRecipeIds(g)]};
+}
+function tryDigimonEvolution(){
+ const g=game;if(!g||g.over||g.pausedForLevel||g.evolutionEnergy<g.evolutionEnergyMax||g.evolutionBlocked)return false;
+ const from=getPlayerSpecies(g);if(!from){g.evolutionBlocked=true;return false}
+ const choice=chooseEvolutionTarget(g,from);
+ if(!choice.target){
+  g.evolutionBlocked=true;
+  console.warn('[Evolution] 进化暂缓：'+from.name+'，'+choice.reason);
+  showToast('进化条件未匹配，请调整已学习技能');
+  return false;
+ }
+ const to=choice.target;
+ g.lastEvolutionFromId=from.id;
+ g.currentDigimonId=to.id;g.lineageVersionId=to.versionId;g.currentSprite=to.spriteFile;g.attr=to.attr;g.currentStage=to.stage;
+ syncSpeciesBaseStats(g,to);
+ g.evolved=stageRank(to)>stageRank('rookie');
+ g.evolutionEnergy=45;g.evolutionBlocked=false;
+ g.evolutionHistory.push({from:from.id,to:to.id,at:Math.floor(g.elapsed),version:to.versionId});
+ showToast('数码进化！'+from.name+' → '+to.name+'！');
+ console.info(from.name+' 进化 → '+to.name+'，分支条件匹配成功',{version:to.versionId,stage:to.stage,attr:to.attr,reason:choice.reason,matchedSkills:choice.matchedSkills||[],matchedUltimateRecipes:choice.matchedRecipes||[]});
+ updateHud();
+ return true;
+}
+function tryDigimonDevolution(){
+ const g=game;if(!g)return false;const from=getPlayerSpecies(g);if(!from||stageRank(from)<=stageRank('rookie'))return false;
+ const parents=(from.from||[]).map(id=>getDigimonRecord(id)).filter(d=>d&&stageRank(d)<stageRank(from));
+ if(!parents.length){console.warn('[Evolution] '+from.name+' 的 from 没有可用上一级记录，保留当前形态。');return false}
+ const parent=parents.find(d=>d.id===g.lastEvolutionFromId)||parents.sort((a,b)=>stageRank(b)-stageRank(a))[0];
+ const oldRank=stageRank(from),newRank=stageRank(parent);
+ const sealedNow=[];
+ for(const recipe of (g.fusedUltimateRecipes||[])){
+  if(typeof recipe==='object'&&!recipe.sealed&&recipe.sealOnDevolution!==false&&(Number(recipe.minStageRank)||oldRank)>newRank){
+   recipe.sealed=true;g.sealedUltimateRecipes.push(recipe.recipeId);sealedNow.push(recipe.recipeId);
+  }
+ }
+ g.lastEvolutionFromId=from.id;
+ g.currentDigimonId=parent.id;g.lineageVersionId=parent.versionId;g.currentSprite=parent.spriteFile;g.attr=parent.attr;g.currentStage=parent.stage;
+ syncSpeciesBaseStats(g,parent);
+ g.evolved=stageRank(parent)>stageRank('rookie');g.evolutionEnergy=0;g.evolutionBlocked=false;
+ showToast(from.name+' 能量不足，退化为 '+parent.name);
+ console.info(from.name+' 退化 → '+parent.name+'，进化能量低于阈值',{sealedRecipes:sealedNow,from:from.from});
+ updateHud();
+ return true;
+}
+function chooseEnemyDigimon(elapsed,boss=false){
+ const t=Math.max(0,elapsed),pool=ALL_DIGIMON.filter(d=>!boss||stageRank(d)>=stageRank('adult'));
+ if(!pool.length)return null;
+ const weighted=pool.map(d=>{
+  const rank=stageRank(d);let weight;
+  if(boss){
+   if(rank===4)weight=3.6/(1+t/130);
+   else if(rank===5)weight=.4+Math.pow(t/55,1.15)*1.6;
+   else if(rank>=6)weight=.03+Math.pow(t/55,1.7)*.55;
+   else weight=0;
+  }else{
+   if(rank<=1)weight=.12;
+   else if(rank===2)weight=.3;
+   else if(rank===3)weight=9;
+   else if(rank===4)weight=.8+t/42;
+   else if(rank===5)weight=.05+Math.pow(t/90,1.5)*1.1;
+   else weight=.01+Math.pow(t/180,1.6)*.35;
+  }
+  return {species:d,weight:Math.max(0,weight)};
+ });
+ const total=weighted.reduce((sum,x)=>sum+x.weight,0);
+ let roll=Math.random()*total;
+ for(const item of weighted){roll-=item.weight;if(roll<=0)return item.species}
+ return weighted[weighted.length-1].species;
+}
+function evolutionSlotById(species,skillId){return (species?.skillPool||[]).find(slot=>slot.id===skillId||slot.name===skillId||slot.skillId===skillId)}
+
 const upgrades=[
  {id:'power',icon:'💥',name:'攻击强化',desc:'每次攻击造成的伤害提高 25%',apply:g=>g.damage*=1.25},
  {id:'speed',icon:'👟',name:'高速移动',desc:'移动速度提高 15%',apply:g=>g.speed*=1.15},
@@ -139,7 +315,11 @@ let localSave=readLocalSave();
 function writeLocalSave(patch){localSave={...localSave,...patch};try{localStorage.setItem(SAVE_KEY,JSON.stringify(localSave))}catch(_){}}
 let selected=['agumon','gabumon'].includes(localSave.lastHero)?localSave.lastHero:'agumon',game=null,last=0,raf=0,keys={},pointer=null,toastTimer=0;
 function resetGame(){
- game={hero:selected,worldX:WORLD_WIDTH/2,worldY:WORLD_HEIGHT/2,r:17,hp:100,maxHp:100,speed:210,damage:22,fireRate:.72,range:290,shotTimer:0,level:1,xp:0,xpNeed:6,elapsed:0,kills:0,enemies:[],shots:[],gems:[],particles:[],spawnTimer:0,bossSpawned:false,bossDead:false,invuln:0,over:false,pausedForLevel:false,evolved:false,shake:0};
+ const starter=LEGACY_STARTER_NODES[selected]||LEGACY_STARTER_NODES.agumon;
+ game={hero:selected,worldX:WORLD_WIDTH/2,worldY:WORLD_HEIGHT/2,r:17,hp:100,maxHp:100,speed:210,damage:22,fireRate:.72,range:290,shotTimer:0,level:1,xp:0,xpNeed:6,elapsed:0,kills:0,enemies:[],shots:[],gems:[],particles:[],spawnTimer:0,bossSpawned:false,bossDead:false,bossActive:false,bossesDefeated:0,nextBossAt:55,invuln:0,over:false,pausedForLevel:false,evolved:false,shake:0,
+  currentDigimonId:starter.id,lineageVersionId:starter.versionId,currentSprite:starter.spriteFile,currentStage:starter.stage,attr:starter.attr,
+  evolutionEnergy:0,evolutionEnergyMax:100,evolutionThreshold:100,devolutionThreshold:15,evolutionBlocked:false,lastEvolutionFromId:null,evolutionHistory:[],
+  learnedSkills:[],fusedUltimateRecipes:[],sealedUltimateRecipes:[],speciesBaseStats:getStageBaseStats(starter)};
  updateCamera();
  updateHud();
 }
@@ -165,19 +345,22 @@ function isScreenVisible(screenX,screenY,pad=90){
  return screenX>=-pad&&screenX<=W+pad&&screenY>=-pad&&screenY<=H+pad;
 }
 function showToast(t){$('toast').textContent=t;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),1900)}
-function updateHud(){if(!game)return;let g=game,n=names[g.hero];$('heroName').textContent=n.name+(g.evolved?' ✦':'');$('heroType').textContent=g.evolved?'进化形态 / CHAMPION':(g.hero==='agumon'?'成长期 · 火焰系 / ROOKIE':'成长期 · 冰霜系 / ROOKIE');$('heroPortrait').src='assets/'+g.hero+'.png';$('heroPortrait').alt=n.name+'像素图';$('levelText').textContent='Lv. '+g.level+(g.evolved?' · 已进化':'');$('timeText').textContent=timeFmt(g.elapsed);$('killText').textContent=g.kills;$('hpText').textContent=Math.max(0,Math.ceil(g.hp))+' / '+g.maxHp;$('hpBar').style.width=(g.hp/g.maxHp*100)+'%';$('xpTop').style.width=(g.xp/g.xpNeed*100)+'%';$('moveIcon').textContent=g.hero==='agumon'?'🔥':'❄';$('moveName').textContent=g.hero==='agumon'?'小型火焰':'冰霜弹';$('moveDesc').textContent='自动锁定最近敌人并发射投射物';$('evoHint').textContent=g.evolved?'进化完成：'+n.evo:'进化将在 Lv.5 触发'}
+function updateHud(){if(!game)return;let g=game,n=names[g.hero],species=getPlayerSpecies(g)||LEGACY_STARTER_NODES[g.hero];$('heroName').textContent=(species?.name||n.name)+(g.evolved?' ✦':'');$('heroType').textContent=(EVOLUTION_STAGE_LABEL[species?.stage]||'成长期')+' · '+({Va:'疫苗系',Da:'数据系',Vi:'病毒系'}[g.attr]||'未知属性');const sprite=getPlayerSprite(g);$('heroPortrait').src=sprite?sprite.src:'assets/'+g.hero+'.png';$('heroPortrait').alt=(species?.name||n.name)+'像素图';$('levelText').textContent='Lv. '+g.level+(g.evolved?' · 已进化':'');$('timeText').textContent=timeFmt(g.elapsed);$('killText').textContent=g.kills;$('hpText').textContent=Math.max(0,Math.ceil(g.hp))+' / '+g.maxHp;$('hpBar').style.width=(g.hp/g.maxHp*100)+'%';$('xpTop').style.width=(g.xp/g.xpNeed*100)+'%';$('moveIcon').textContent=g.attr==='Da'?'❄':(g.attr==='Vi'?'☠':'🔥');$('moveName').textContent=g.attr==='Da'?'冰霜弹':(g.attr==='Vi'?'暗影冲击':'小型火焰');$('moveDesc').textContent='自动锁定最近敌人并发射投射物';$('evoHint').textContent=g.evolved?'进化完成：'+species?.name:'进化能量 '+Math.floor(g.evolutionEnergy||0)+' / '+(g.evolutionEnergyMax||100)}
 function timeFmt(s){s=Math.floor(s);return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
 function spawnEnemy(boss=false){
- const g=game,angle=rnd(0,Math.PI*2);
- const minDistance=boss?760:600,maxDistance=boss?1120:900;
- const spawnDistance=rnd(minDistance,maxDistance);
- // WORLD SPACE spawn: always based on the player's current worldX/worldY.
+ const g=game,species=chooseEnemyDigimon(g.elapsed,boss);
+ if(!species){console.warn('[Evolution] 没有可刷出的数码兽配置。');return}
+ const angle=rnd(0,Math.PI*2),minDistance=boss?760:600,maxDistance=boss?1120:900,spawnDistance=rnd(minDistance,maxDistance);
+ // WORLD SPACE: mob spawns around the player's current worldX/worldY.
  const worldX=clamp(g.worldX+Math.cos(angle)*spawnDistance,WORLD_MARGIN,WORLD_WIDTH-WORLD_MARGIN);
  const worldY=clamp(g.worldY+Math.sin(angle)*spawnDistance,WORLD_MARGIN,WORLD_HEIGHT-WORLD_MARGIN);
- const scale=1+g.elapsed/95;
- const e={worldX,worldY,r:boss?31:rnd(12,18),hp:boss?560:Math.round(rnd(26,42)*scale),maxHp:boss?560:0,speed:boss?39:rnd(32,52)*Math.min(1.65,scale),damage:boss?22:10,xp:boss?12:1,boss,phase:rnd(0,6),hit:0};
- e.maxHp=e.hp;g.enemies.push(e);
- if(boss)showToast('警告！强大数码兽出现！');
+ const rank=stageRank(species),scale=1+g.elapsed/95;
+ const radius=boss?Math.min(38,19+rank*3):Math.min(23,11+rank*1.6);
+ const hp=boss?Math.round(180+rank*86+g.elapsed*.6):Math.round((20+rank*9)*scale);
+ const enemy={worldX,worldY,r:radius,hp,maxHp:hp,speed:boss?Math.max(26,48-rank*3):Math.max(24,rnd(32,52)-Math.max(0,rank-3)*3),damage:boss?9+rank*4:6+rank*2,xp:boss?5+rank*2:Math.max(1,rank-1),boss,phase:rnd(0,6),hit:0,
+  digimonId:species.id,digimonName:species.name,stage:species.stage,stageRank:rank,attr:species.attr,spriteFile:species.spriteFile,versionId:species.versionId};
+ g.enemies.push(enemy);
+ if(boss)showToast('强敌出现：'+species.name+' · '+(EVOLUTION_STAGE_LABEL[species.stage]||species.stage));
 }
 function nearestEnemy(){
  let best=null,bd=Infinity;
@@ -187,20 +370,20 @@ function nearestEnemy(){
 function shoot(){
  const e=nearestEnemy();if(!e)return;
  const a=Math.atan2(e.worldY-game.worldY,e.worldX-game.worldX),n=names[game.hero];
- game.shots.push({worldX:game.worldX+Math.cos(a)*18,worldY:game.worldY+Math.sin(a)*18,vx:Math.cos(a)*430,vy:Math.sin(a)*430,r:6,life:1.3,damage:game.damage,color:n.shot});
+ game.shots.push({worldX:game.worldX+Math.cos(a)*18,worldY:game.worldY+Math.sin(a)*18,vx:Math.cos(a)*430,vy:Math.sin(a)*430,r:6,life:1.3,damage:game.damage,color:n.shot,attr:game.attr});
  game.shotTimer=game.fireRate;
  for(let i=0;i<3;i++)game.particles.push({worldX:game.worldX,worldY:game.worldY,vx:rnd(-25,25),vy:rnd(-25,25),life:.18,color:n.color,r:rnd(2,4)});
 }
 function gemDrop(e){
  game.gems.push({worldX:e.worldX,worldY:e.worldY,r:e.boss?10:6,xp:e.xp,pulse:rnd(0,7)});
 }
-function damagePlayer(d){if(game.invuln>0)return;game.hp-=d;game.invuln=.55;game.shake=7;if(game.hp<=0)endGame(false)}
-function levelUp(){game.level++;game.xp-=game.xpNeed;game.xpNeed=Math.ceil(game.xpNeed*1.35+1);game.pausedForLevel=true;updateHud();let options=[...upgrades].sort(()=>Math.random()-.5).slice(0,3);let box=$('upgradeChoices');box.innerHTML='';options.forEach(u=>{let b=document.createElement('button');b.className='upgrade';b.innerHTML=`<div class="ico">${u.icon}</div><strong>${u.name}</strong><small>${u.desc}</small>`;b.onclick=()=>{u.apply(game);game.pausedForLevel=false;$('levelOverlay').classList.add('hidden');if(game.level>=5&&!game.evolved){game.evolved=true;game.r+=4;game.maxHp+=30;game.hp=Math.min(game.maxHp,game.hp+30);game.damage*=1.35;showToast('数码进化！'+names[game.hero].name+' → '+names[game.hero].evo+'！')}updateHud();last=performance.now();raf=requestAnimationFrame(loop)};box.appendChild(b)});$('levelOverlay').classList.remove('hidden')}
+function damagePlayer(d,sourceAttr=null){if(game.invuln>0)return;game.hp-=d*getAttributeDamageMultiplier(sourceAttr,game.attr);game.invuln=.55;game.shake=7;if(game.hp<=0)endGame(false)}
+function levelUp(){game.level++;game.xp-=game.xpNeed;game.xpNeed=Math.ceil(game.xpNeed*1.35+1);game.pausedForLevel=true;updateHud();let options=[...upgrades].sort(()=>Math.random()-.5).slice(0,3);let box=$('upgradeChoices');box.innerHTML='';options.forEach(u=>{let b=document.createElement('button');b.className='upgrade';b.innerHTML=`<div class="ico">${u.icon}</div><strong>${u.name}</strong><small>${u.desc}</small>`;b.onclick=()=>{u.apply(game);game.pausedForLevel=false;$('levelOverlay').classList.add('hidden');updateHud();last=performance.now();raf=requestAnimationFrame(loop)};box.appendChild(b)});$('levelOverlay').classList.remove('hidden')}
 function endGame(win){if(!game||game.over)return;game.over=true;writeLocalSave({lastHero:game.hero,bestSurvivalTime:Math.max(Number(localSave.bestSurvivalTime)||0,Math.floor(game.elapsed)),bestKills:Math.max(Number(localSave.bestKills)||0,game.kills),bestLevel:Math.max(Number(localSave.bestLevel)||1,game.level)});$('endTitle').textContent=win?'胜利！守住数码世界！':'搭档倒下了！';$('endDesc').textContent=win?'你成功击败了最终 Boss。下一次可以挑战更高纪录！':'别气馁，升级技能、保持移动，再试一次！';$('endKills').textContent=game.kills;$('endTime').textContent=timeFmt(game.elapsed);$('endOverlay').classList.remove('hidden')}
 function update(dt){
  const g=game;if(!g||g.over||g.pausedForLevel)return;
  g.elapsed+=dt;g.invuln=Math.max(0,g.invuln-dt);g.shake=Math.max(0,g.shake-dt*24);
- if(g.elapsed>=55&&!g.bossSpawned){g.bossSpawned=true;spawnEnemy(true)}
+ if(g.elapsed>=(g.nextBossAt||55)&&!g.bossActive&&!g.over){g.bossSpawned=true;g.bossActive=true;spawnEnemy(true)}
 
  // INPUT: keyboard is direction-based. Pointer values are screen coordinates.
  // Convert pointer screenX/screenY to world targets through the current camera offset.
@@ -231,9 +414,9 @@ function update(dt){
   let hit=false;
   for(const e of g.enemies){
    if(Math.hypot(s.worldX-e.worldX,s.worldY-e.worldY)<s.r+e.r){
-    e.hp-=s.damage;e.hit=.1;hit=true;
+    e.hp-=s.damage*getAttributeDamageMultiplier(s.attr,e.attr);e.hit=.1;hit=true;
     for(let j=0;j<4;j++)g.particles.push({worldX:s.worldX,worldY:s.worldY,vx:rnd(-70,70),vy:rnd(-70,70),life:.25,color:s.color,r:rnd(2,4)});
-    if(e.hp<=0){gemDrop(e);g.kills++;if(e.boss){g.bossDead=true;endGame(true)}}
+    if(e.hp<=0){gemDrop(e);g.kills++;g.evolutionEnergy=Math.min(g.evolutionEnergyMax,g.evolutionEnergy+ (e.boss?10:2.6+Math.max(0,e.stageRank||3)*.42));if(e.boss){g.bossActive=false;g.bossesDefeated=(g.bossesDefeated||0)+1;g.bossDead=false;g.bossSpawned=false;if(stageRank(e.stage)>=stageRank('ultimate')){g.bossDead=true;endGame(true)}else{g.nextBossAt=g.elapsed+Math.max(28,58-g.elapsed*.07);showToast(e.digimonName+' 已击败！更强的数码兽正在接近')}}}
     break;
    }
   }
@@ -247,14 +430,14 @@ function update(dt){
   if(dd>e.r+g.r){
    e.worldX=clamp(e.worldX+Math.cos(a)*e.speed*dt,WORLD_MARGIN,WORLD_WIDTH-WORLD_MARGIN);
    e.worldY=clamp(e.worldY+Math.sin(a)*e.speed*dt,WORLD_MARGIN,WORLD_HEIGHT-WORLD_MARGIN);
-  }else damagePlayer(e.boss?20:10);
+  }else damagePlayer(e.damage||10,e.attr);
   if(e.hp<=0){g.enemies.splice(i,1);continue}
  }
 
  for(let i=g.gems.length-1;i>=0;i--){
   const m=g.gems[i];m.pulse+=dt*4;const d=dist(m,g);
   if(d<100){const a=Math.atan2(g.worldY-m.worldY,g.worldX-m.worldX);m.worldX+=Math.cos(a)*280*dt;m.worldY+=Math.sin(a)*280*dt}
-  if(d<g.r+m.r+5){g.xp+=m.xp;g.gems.splice(i,1);if(g.xp>=g.xpNeed){levelUp();break}}
+  if(d<g.r+m.r+5){g.xp+=m.xp;g.evolutionEnergy=Math.min(g.evolutionEnergyMax,g.evolutionEnergy+2.6+Math.min(2,stageRank(getPlayerSpecies(g))*.2));g.gems.splice(i,1);if(g.xp>=g.xpNeed){levelUp();break}}
  }
  for(let i=g.particles.length-1;i>=0;i--){
   const p=g.particles[i];p.worldX+=p.vx*dt;p.worldY+=p.vy*dt;p.life-=dt;
@@ -300,7 +483,7 @@ function drawHeroFallback(g){
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(0,-r-9,3,0,Math.PI*2);ctx.fill();ctx.restore();
 }
 function drawHero(g){
- const img=digimonSprites[g.hero],n=names[g.hero],r=g.r;
+ const img=getPlayerSprite(g),n=names[g.hero],r=g.r;
  if(!img||!img.complete||!img.naturalWidth)return drawHeroFallback(g);
  const {screenX,screenY}=worldToScreen(g.worldX,g.worldY);
  ctx.save();ctx.translate(screenX,screenY);
@@ -314,9 +497,25 @@ function drawHero(g){
 }
 function drawEnemy(e){
  const {screenX,screenY}=worldToScreen(e.worldX,e.worldY);
- if(!isScreenVisible(screenX,screenY,e.r+80))return;
- ctx.save();ctx.translate(screenX,screenY);ctx.shadowColor=e.boss?'#ff3c89':'#a56fff';ctx.shadowBlur=e.boss?22:8;ctx.fillStyle=e.hit>0?'#fff':(e.boss?'#a92d6f':'#6a4a94');ctx.beginPath();ctx.arc(0,0,e.r,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;ctx.fillStyle='#e9ecff';ctx.beginPath();ctx.arc(-e.r*.28,-e.r*.12,Math.max(2,e.r*.14),0,Math.PI*2);ctx.arc(e.r*.28,-e.r*.12,Math.max(2,e.r*.14),0,Math.PI*2);ctx.fill();ctx.fillStyle='#231b43';ctx.beginPath();ctx.arc(-e.r*.25,-e.r*.12,Math.max(1,e.r*.07),0,Math.PI*2);ctx.arc(e.r*.31,-e.r*.12,Math.max(1,e.r*.07),0,Math.PI*2);ctx.fill();if(e.boss){ctx.strokeStyle='#ff71af';ctx.lineWidth=3;ctx.beginPath();ctx.arc(0,0,e.r+5,Math.PI,Math.PI*2);ctx.stroke()}ctx.restore();
- if(e.boss||e.hp<e.maxHp){let bw=e.boss?72:30;ctx.fillStyle='#301b31';ctx.fillRect(screenX-bw/2,screenY-e.r-10,bw,4);ctx.fillStyle=e.boss?'#ff5598':'#be83ff';ctx.fillRect(screenX-bw/2,screenY-e.r-10,bw*clamp(e.hp/e.maxHp,0,1),4)}
+ if(!isScreenVisible(screenX,screenY,e.r+86))return;
+ const sprite=getSpeciesSprite(e.spriteFile);
+ if(sprite){
+  ctx.save();ctx.translate(screenX,screenY);
+  const size=e.boss?Math.max(50,e.r*2.7):Math.max(28,e.r*2.2);
+  ctx.shadowColor=e.boss?'#ff6b9a':'#769bff';ctx.shadowBlur=e.boss?20:7;ctx.imageSmoothingEnabled=false;ctx.drawImage(sprite,-size/2,-size/2,size,size);ctx.restore();
+ }else{
+  ctx.save();ctx.translate(screenX,screenY);ctx.shadowColor=e.boss?'#ff3c89':'#a56fff';ctx.shadowBlur=e.boss?22:8;
+  ctx.fillStyle=e.hit>0?'#fff':(e.boss?'#a92d6f':'#6a4a94');ctx.beginPath();ctx.arc(0,0,e.r,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+  ctx.fillStyle='#e9ecff';ctx.beginPath();ctx.arc(-e.r*.28,-e.r*.12,Math.max(2,e.r*.14),0,Math.PI*2);ctx.arc(e.r*.28,-e.r*.12,Math.max(2,e.r*.14),0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#231b43';ctx.beginPath();ctx.arc(-e.r*.25,-e.r*.12,Math.max(1,e.r*.07),0,Math.PI*2);ctx.arc(e.r*.31,-e.r*.12,Math.max(1,e.r*.07),0,Math.PI*2);ctx.fill();
+  if(e.boss){ctx.strokeStyle='#ff71af';ctx.lineWidth=3;ctx.beginPath();ctx.arc(0,0,e.r+5,Math.PI,Math.PI*2);ctx.stroke()}
+  ctx.restore();
+ }
+ if(e.boss||e.hp<e.maxHp){
+  const bw=e.boss?74:30;ctx.fillStyle='#301b31';ctx.fillRect(screenX-bw/2,screenY-e.r-10,bw,4);
+  ctx.fillStyle=e.boss?'#ff5598':'#be83ff';ctx.fillRect(screenX-bw/2,screenY-e.r-10,bw*clamp(e.hp/e.maxHp,0,1),4);
+ }
+ if(e.boss){ctx.textAlign='center';ctx.font='bold 11px system-ui';ctx.fillStyle='#f0faff';ctx.shadowColor='#07111a';ctx.shadowBlur=4;ctx.fillText(e.digimonName||'BOSS',screenX,screenY-e.r-18);ctx.shadowBlur=0}
 }
 function render(){
  drawGrid();if(!game)return;const g=game;
@@ -331,7 +530,23 @@ function render(){
 }
 function loop(now){if(!game)return;let dt=Math.min(.033,(now-last)/1000||0);last=now;update(dt);render();if(!game.over&&!game.pausedForLevel)raf=requestAnimationFrame(loop)}
 window.addEventListener('keydown',e=>{let k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault()});window.addEventListener('keyup',e=>{let k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=false});function pointerScreenPoint(e){const r=canvas.getBoundingClientRect();return {screenX:(e.clientX-r.left)/r.width*W,screenY:(e.clientY-r.top)/r.height*H}}canvas.addEventListener('pointerdown',e=>{pointer=pointerScreenPoint(e);canvas.setPointerCapture?.(e.pointerId)});canvas.addEventListener('pointermove',e=>{if(e.buttons)pointer=pointerScreenPoint(e)});canvas.addEventListener('pointerup',()=>pointer=null);canvas.addEventListener('pointercancel',()=>pointer=null);
-document.querySelectorAll('[data-hero]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.hero;document.querySelectorAll('[data-hero]').forEach(x=>x.classList.toggle('selected',x===b));if(game){game.hero=selected;updateHud();render()}}));$('startBtn').onclick=start;$('againBtn').onclick=()=>{$('endOverlay').classList.add('hidden');start()};resetGame();render();
+document.querySelectorAll('[data-hero]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.hero;document.querySelectorAll('[data-hero]').forEach(x=>x.classList.toggle('selected',x===b));if(game){const starter=LEGACY_STARTER_NODES[selected]||LEGACY_STARTER_NODES.agumon;game.hero=selected;game.currentDigimonId=starter.id;game.lineageVersionId=starter.versionId;game.currentSprite=starter.spriteFile;game.currentStage=starter.stage;game.attr=starter.attr;game.evolved=false;game.evolutionEnergy=0;game.evolutionBlocked=false;game.learnedSkills=[];game.fusedUltimateRecipes=[];game.sealedUltimateRecipes=[];game.lastEvolutionFromId=null;game.speciesBaseStats=getStageBaseStats(starter);game.maxHp=100;game.hp=Math.min(game.hp,game.maxHp);game.damage=22;game.speed=210;game.fireRate=.72;game.range=290;game.r=17;updateHud();render()}}));$('startBtn').onclick=start;$('againBtn').onclick=()=>{$('endOverlay').classList.add('hidden');start()};resetGame();render();
+
+window.DigimonEvolutionAPI={
+ config:()=>EVO_CONFIG,
+ listVersions:()=>Object.entries(EVO_CONFIG).map(([id,v])=>({id,name:v.name,count:v.digimonList.length})),
+ listDigimon:(versionId=null)=>ALL_DIGIMON.filter(d=>!versionId||d.versionId===versionId).map(d=>({id:d.id,name:d.name,versionId:d.versionId,stage:d.stage,attr:d.attr,spriteFile:d.spriteFile,from:d.from,branches:d.branches})),
+ getState:()=>game?({hero:game.hero,currentDigimonId:game.currentDigimonId,currentSprite:game.currentSprite,lineageVersionId:game.lineageVersionId,stage:game.currentStage,attr:game.attr,evolutionEnergy:game.evolutionEnergy,evolutionEnergyMax:game.evolutionEnergyMax,learnedSkills:[...game.learnedSkills],fusedUltimateRecipes:game.fusedUltimateRecipes.map(x=>({...x})),sealedUltimateRecipes:[...game.sealedUltimateRecipes],evolutionHistory:game.evolutionHistory.map(x=>({...x})),stats:{hp:game.hp,maxHp:game.maxHp,attack:game.damage,speed:game.speed,range:game.range}}):null,
+ setSkillSlot:(digimonId,slotNumber,patch={})=>{const d=getDigimonRecord(digimonId),slot=d?.skillPool?.find(s=>s.slot===Number(slotNumber));if(!slot)return false;Object.assign(slot,patch);if(patch.name&&!Object.prototype.hasOwnProperty.call(patch,'enabled'))slot.enabled=true;if(game)game.evolutionBlocked=false;return slot},
+ setBranchCondition:(fromId,toId,rule={})=>{const d=getDigimonRecord(fromId);if(!d||(d.branches||[]).indexOf(toId)<0)return false;d.branchConditions=d.branchConditions||{};d.branchConditions[toId]={enabled:true,requiredSkillIds:[],anySkillIds:[],requiredUltimateRecipeIds:[],excludedSkillIds:[],minLearnedSkills:0,priority:0,...rule};if(game)game.evolutionBlocked=false;return true},
+ setUltimateRecipe:(digimonId,patch={})=>{const d=getDigimonRecord(digimonId);if(!d)return false;d.ultimateRecipe={...(d.ultimateRecipe||{}),...patch};if(patch.name||patch.requiredSkillIds?.length)d.ultimateRecipe.enabled=patch.enabled??true;if(game)game.evolutionBlocked=false;return d.ultimateRecipe},
+ learnSkill:(skillId)=>{if(!game)return false;const d=getPlayerSpecies(game),slot=evolutionSlotById(d,skillId);if(!slot||slot.enabled===false)return false;const id=slot.id||slot.skillId||slot.name;if(!game.learnedSkills.includes(id))game.learnedSkills.push(id);game.evolutionBlocked=false;console.info('[Skill] 已学习技能：'+(slot.name||id),{digimon:d.id,skillId:id});if(game.evolutionEnergy>=game.evolutionEnergyMax)tryDigimonEvolution();return true},
+ fuseUltimate:(recipeId)=>{if(!game)return false;const d=getPlayerSpecies(game),recipe=d?.ultimateRecipe;if(!recipe||recipe.id!==recipeId||!recipe.enabled||!Array.isArray(recipe.requiredSkillIds)||!recipe.requiredSkillIds.length)return false;if(game.sealedUltimateRecipes.includes(recipeId)||!recipe.requiredSkillIds.every(id=>game.learnedSkills.includes(id)))return false;if(game.fusedUltimateRecipes.some(x=>x.recipeId===recipeId&&!x.sealed))return false;game.fusedUltimateRecipes.push({recipeId,name:recipe.name||recipeId,minStageRank:stageRank(recipe.minStage||d.stage),sealOnDevolution:recipe.sealOnDevolution!==false,sealed:false});game.evolutionBlocked=false;console.info('[Ultimate] 合成必杀成功：'+(recipe.name||recipeId));if(game.evolutionEnergy>=game.evolutionEnergyMax)tryDigimonEvolution();return true},
+ setEvolutionEnergy:(value)=>{if(!game)return false;game.evolutionEnergy=Math.max(0,Math.min(game.evolutionEnergyMax,Number(value)||0));game.evolutionBlocked=false;if(game.evolutionEnergy>=game.evolutionEnergyMax)return tryDigimonEvolution();return true},
+ tryEvolution:()=>tryDigimonEvolution(),
+ setCurrentDigimon:(id)=>{if(!game)return false;const d=getDigimonRecord(id);if(!d)return false;const old=getPlayerSpecies(game);game.lastEvolutionFromId=old?.id||null;game.currentDigimonId=d.id;game.lineageVersionId=d.versionId;game.currentSprite=d.spriteFile;game.currentStage=d.stage;game.attr=d.attr;syncSpeciesBaseStats(game,d);game.evolved=stageRank(d)>stageRank('rookie');game.evolutionBlocked=false;updateHud();render();return true}
+};
+
 })();
 </script>
 </body></html>
