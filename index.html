@@ -245,7 +245,7 @@ function tryDigimonEvolution(){
  g.lastEvolutionFromId=from.id;
  g.currentDigimonId=to.id;g.lineageVersionId=to.versionId;g.currentSprite=to.spriteFile;g.attr=to.attr;g.currentStage=to.stage;
  syncSpeciesBaseStats(g,to);
- g.evolved=stageRank(to)>stageRank('rookie');
+ g.evolved=true;g.canDevolve=true;
  g.evolutionEnergy=45;g.evolutionBlocked=false;
  g.evolutionHistory.push({from:from.id,to:to.id,at:Math.floor(g.elapsed),version:to.versionId});
  showToast('数码进化！'+from.name+' → '+to.name+'！');
@@ -268,7 +268,7 @@ function tryDigimonDevolution(){
  g.lastEvolutionFromId=from.id;
  g.currentDigimonId=parent.id;g.lineageVersionId=parent.versionId;g.currentSprite=parent.spriteFile;g.attr=parent.attr;g.currentStage=parent.stage;
  syncSpeciesBaseStats(g,parent);
- g.evolved=stageRank(parent)>stageRank('rookie');g.evolutionEnergy=0;g.evolutionBlocked=false;
+ g.evolved=stageRank(parent)>stageRank('rookie');g.canDevolve=false;g.evolutionEnergy=0;g.evolutionBlocked=false;
  showToast(from.name+' 能量不足，退化为 '+parent.name);
  console.info(from.name+' 退化 → '+parent.name+'，进化能量低于阈值',{sealedRecipes:sealedNow,from:from.from});
  updateHud();
@@ -318,7 +318,7 @@ function resetGame(){
  const starter=LEGACY_STARTER_NODES[selected]||LEGACY_STARTER_NODES.agumon;
  game={hero:selected,worldX:WORLD_WIDTH/2,worldY:WORLD_HEIGHT/2,r:17,hp:100,maxHp:100,speed:210,damage:22,fireRate:.72,range:290,shotTimer:0,level:1,xp:0,xpNeed:6,elapsed:0,kills:0,enemies:[],shots:[],gems:[],particles:[],spawnTimer:0,bossSpawned:false,bossDead:false,bossActive:false,bossesDefeated:0,nextBossAt:55,invuln:0,over:false,pausedForLevel:false,evolved:false,shake:0,
   currentDigimonId:starter.id,lineageVersionId:starter.versionId,currentSprite:starter.spriteFile,currentStage:starter.stage,attr:starter.attr,
-  evolutionEnergy:0,evolutionEnergyMax:100,evolutionThreshold:100,devolutionThreshold:15,evolutionBlocked:false,lastEvolutionFromId:null,evolutionHistory:[],
+  evolutionEnergy:0,evolutionEnergyMax:100,evolutionThreshold:100,devolutionThreshold:15,evolutionBlocked:false,canDevolve:false,lastEvolutionFromId:null,evolutionHistory:[],
   learnedSkills:[],fusedUltimateRecipes:[],sealedUltimateRecipes:[],speciesBaseStats:getStageBaseStats(starter)};
  updateCamera();
  updateHud();
@@ -444,7 +444,7 @@ function update(dt){
   if(p.life<=0)g.particles.splice(i,1);
  }
  // Evolution energy is independent from XP. Devolution only triggers when the energy crosses below its threshold.
- if(g.evolutionEnergy>0&&stageRank(getPlayerSpecies(g))>stageRank('rookie')){
+ if(g.evolutionEnergy>0&&g.canDevolve){
   const priorEnergy=g.evolutionEnergy;
   g.evolutionEnergy=Math.max(0,g.evolutionEnergy-.42*dt);
   if(priorEnergy>=g.devolutionThreshold&&g.evolutionEnergy<g.devolutionThreshold)tryDigimonDevolution();
@@ -538,7 +538,7 @@ function render(){
 }
 function loop(now){if(!game)return;let dt=Math.min(.033,(now-last)/1000||0);last=now;update(dt);render();if(!game.over&&!game.pausedForLevel)raf=requestAnimationFrame(loop)}
 window.addEventListener('keydown',e=>{let k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault()});window.addEventListener('keyup',e=>{let k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=false});function pointerScreenPoint(e){const r=canvas.getBoundingClientRect();return {screenX:(e.clientX-r.left)/r.width*W,screenY:(e.clientY-r.top)/r.height*H}}canvas.addEventListener('pointerdown',e=>{pointer=pointerScreenPoint(e);canvas.setPointerCapture?.(e.pointerId)});canvas.addEventListener('pointermove',e=>{if(e.buttons)pointer=pointerScreenPoint(e)});canvas.addEventListener('pointerup',()=>pointer=null);canvas.addEventListener('pointercancel',()=>pointer=null);
-document.querySelectorAll('[data-hero]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.hero;document.querySelectorAll('[data-hero]').forEach(x=>x.classList.toggle('selected',x===b));if(game){const starter=LEGACY_STARTER_NODES[selected]||LEGACY_STARTER_NODES.agumon;game.hero=selected;game.currentDigimonId=starter.id;game.lineageVersionId=starter.versionId;game.currentSprite=starter.spriteFile;game.currentStage=starter.stage;game.attr=starter.attr;game.evolved=false;game.evolutionEnergy=0;game.evolutionBlocked=false;game.learnedSkills=[];game.fusedUltimateRecipes=[];game.sealedUltimateRecipes=[];game.lastEvolutionFromId=null;game.speciesBaseStats=getStageBaseStats(starter);game.maxHp=100;game.hp=Math.min(game.hp,game.maxHp);game.damage=22;game.speed=210;game.fireRate=.72;game.range=290;game.r=17;updateHud();render()}}));$('startBtn').onclick=start;$('againBtn').onclick=()=>{$('endOverlay').classList.add('hidden');start()};resetGame();render();
+document.querySelectorAll('[data-hero]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.hero;document.querySelectorAll('[data-hero]').forEach(x=>x.classList.toggle('selected',x===b));if(game){const starter=LEGACY_STARTER_NODES[selected]||LEGACY_STARTER_NODES.agumon;game.hero=selected;game.currentDigimonId=starter.id;game.lineageVersionId=starter.versionId;game.currentSprite=starter.spriteFile;game.currentStage=starter.stage;game.attr=starter.attr;game.evolved=false;game.canDevolve=false;game.evolutionEnergy=0;game.evolutionBlocked=false;game.learnedSkills=[];game.fusedUltimateRecipes=[];game.sealedUltimateRecipes=[];game.lastEvolutionFromId=null;game.speciesBaseStats=getStageBaseStats(starter);game.maxHp=100;game.hp=Math.min(game.hp,game.maxHp);game.damage=22;game.speed=210;game.fireRate=.72;game.range=290;game.r=17;updateHud();render()}}));$('startBtn').onclick=start;$('againBtn').onclick=()=>{$('endOverlay').classList.add('hidden');start()};resetGame();render();
 
 window.DigimonEvolutionAPI={
  config:()=>EVO_CONFIG,
@@ -553,7 +553,7 @@ window.DigimonEvolutionAPI={
  setEvolutionEnergy:(value)=>{if(!game)return false;game.evolutionEnergy=Math.max(0,Math.min(game.evolutionEnergyMax,Number(value)||0));game.evolutionBlocked=false;if(game.evolutionEnergy>=game.evolutionEnergyMax)return tryDigimonEvolution();return true},
  tryEvolution:()=>tryDigimonEvolution(),
  tryDevolution:()=>tryDigimonDevolution(),
- setCurrentDigimon:(id)=>{if(!game)return false;const d=getDigimonRecord(id);if(!d)return false;const old=getPlayerSpecies(game);game.lastEvolutionFromId=old?.id||null;game.currentDigimonId=d.id;game.lineageVersionId=d.versionId;game.currentSprite=d.spriteFile;game.currentStage=d.stage;game.attr=d.attr;syncSpeciesBaseStats(game,d);game.evolved=stageRank(d)>stageRank('rookie');game.evolutionBlocked=false;updateHud();render();return true}
+ setCurrentDigimon:(id)=>{if(!game)return false;const d=getDigimonRecord(id);if(!d)return false;const old=getPlayerSpecies(game);game.lastEvolutionFromId=old?.id||null;game.currentDigimonId=d.id;game.lineageVersionId=d.versionId;game.currentSprite=d.spriteFile;game.currentStage=d.stage;game.attr=d.attr;syncSpeciesBaseStats(game,d);game.evolved=false;game.canDevolve=false;game.evolutionBlocked=false;game.evolutionEnergy=0;game.lastEvolutionFromId=null;updateHud();render();return true}
 };
 
 })();
